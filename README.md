@@ -325,4 +325,4 @@ sensor.configure().operatingMode(ina219::Mode::PowerDown);
 
 ## License
 
-MIT (see `LICENSE`).
+MIT License (see `LICENSE` file).
