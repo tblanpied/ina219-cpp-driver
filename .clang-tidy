@@ -166,7 +166,7 @@ Checks: >
 
 WarningsAsErrors: ''
 
-HeaderFilterRegex: '.*/include/.*'
+HeaderFilterRegex: '.*/include/ina219/.*'
 
 CheckOptions:
   # === Naming Conventions ===

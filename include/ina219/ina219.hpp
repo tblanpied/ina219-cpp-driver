@@ -22,15 +22,17 @@
  * SOFTWARE.
  *
  * @file ina219.hpp
- * @brief Header file for the INA219 sensor C++ driver.
+ * @brief Header file containing the class template for the INA219 sensor C++ driver.
  * @version 1.0.0
  * @author Timothée Blanpied
- * @date 2026-02-21
+ * @date 2026-02-23
  */
 
 #pragma once
+#include <concepts>
 #include <cstdarg>
 #include <cstdint>
+#include <utility>
 
 namespace ina219 {
 
@@ -127,78 +129,91 @@ enum class Mode : uint8_t {
 };
 
 /**
- * @brief Abstract interface for platform-specific I2C communication, timing and optional debugging,
- * which the INA219 driver relies on to interact with the sensor.
+ * @brief Concept describing the platform services required by the INA219 driver.
+ *
+ * This is a *non-virtual*, compile-time interface. Any type `P` that satisfies this
+ * concept can be used as the platform/policy type for the templated driver.
+ *
+ * The platform type is responsible for:
+ * - Performing I2C write/read transactions (7-bit address).
+ * - Providing a millisecond delay function.
+ * - Optionally providing logging facilities (printf-like format + va_list).
+ *
+ * @tparam P Platform type.
  */
-class Provider {
-  public:
+template<typename P>
+concept Platform = requires(
+    P& p,
+    uint8_t addr,
+    const uint8_t* tx,
+    uint8_t* rx,
+    std::size_t n,
+    bool no_stop,
+    uint32_t ms,
+    const char* fmt,
+    std::va_list args ) {
     /**
-     * @brief Default constructor for the Provider interface.
-     */
-    Provider() = default;
-
-    /**
-     * @brief Virtual destructor for the Provider interface.
-     */
-    virtual ~Provider() = default;
-
-    // Delete copy and move constructors and assignment operators to prevent slicing and ensure that
-    // the Provider is always used through a reference or pointer to the derived class.
-    Provider( const Provider& ) = delete;
-    Provider& operator=( const Provider& ) = delete;
-    Provider( Provider&& ) = delete;
-    Provider& operator=( Provider&& ) = delete;
-
-    /**
-     * @brief I2C write operation.
+     * @brief Write bytes on the I2C bus.
      *
-     * @param addr The 7-bit I2C address of the device.
-     * @param data Pointer to the data buffer to be sent.
-     * @param len The length of the data buffer in bytes.
-     * @param nostop If true, do not send a stop condition after the write (for repeated start
-     * scenarios).
-     * @return true if the write operation was successful, false otherwise.
+     * Typical usage: write register address, or write register + payload.
+     *
+     * @param addr     7-bit I2C address.
+     * @param tx       Pointer to TX buffer.
+     * @param n        Number of bytes to write.
+     * @param no_stop  If true, do not send STOP (used for repeated-start sequences).
+     * @return true on success, false on failure (NACK/bus error/etc.).
      */
-    virtual bool i2cWrite( uint8_t addr, const uint8_t* data, std::size_t len, bool nostop ) = 0;
+    { p.i2cWrite( addr, tx, n, no_stop ) } -> std::convertible_to<bool>;
 
     /**
-     * @brief I2C read operation.
+     * @brief Read bytes from the I2C bus.
      *
-     * @param addr The 7-bit I2C address of the device.
-     * @param data Pointer to the buffer where received data will be stored.
-     * @param len The length of the data buffer in bytes.
-     * @param nostop If true, do not send a stop condition after the read (for repeated start
-     * scenarios).
-     * @return true if the read operation was successful, false otherwise.
+     * Typical usage: after a "register select" write with no_stop=true.
+     *
+     * @param addr     7-bit I2C address.
+     * @param rx       Pointer to RX buffer.
+     * @param n        Number of bytes to read.
+     * @param no_stop  If true, do not send STOP.
+     * @return true on success, false on failure.
      */
-    virtual bool i2cRead( uint8_t addr, uint8_t* data, std::size_t len, bool nostop ) = 0;
+    { p.i2cRead( addr, rx, n, no_stop ) } -> std::convertible_to<bool>;
 
     /**
-     * @brief Delay execution for a specified number of milliseconds.
+     * @brief Delay execution for (at least) @p ms milliseconds.
      *
-     * @param ms The number of milliseconds to delay.
+     * Used to wait for reset/config/calibration effects to settle.
+     *
+     * @param ms Milliseconds to delay.
      */
-    virtual void delayMs( uint32_t ms ) = 0;
+    { p.delayMs( ms ) } -> std::same_as<void>;
 
-    virtual void logDebug( const char* fmt, std::va_list args ) {
-        (void)fmt;
-        (void)args;
-    }    // default no-op
+    /**
+     * @brief Log a debug message.
+     * @param fmt printf-style format string.
+     * @param args va_list argument list.
+     */
+    { p.logDebug( fmt, args ) } -> std::same_as<void>;
 
-    virtual void logInfo( const char* fmt, std::va_list args ) {
-        (void)fmt;
-        (void)args;
-    }    // default no-op
+    /**
+     * @brief Log an informational message.
+     * @param fmt printf-style format string.
+     * @param args va_list argument list.
+     */
+    { p.logInfo( fmt, args ) } -> std::same_as<void>;
 
-    virtual void logWarning( const char* fmt, std::va_list args ) {
-        (void)fmt;
-        (void)args;
-    }    // default no-op
+    /**
+     * @brief Log a warning message.
+     * @param fmt printf-style format string.
+     * @param args va_list argument list.
+     */
+    { p.logWarning( fmt, args ) } -> std::same_as<void>;
 
-    virtual void logError( const char* fmt, std::va_list args ) {
-        (void)fmt;
-        (void)args;
-    }    // default no-op
+    /**
+     * @brief Log an error message.
+     * @param fmt printf-style format string.
+     * @param args va_list argument list.
+     */
+    { p.logError( fmt, args ) } -> std::same_as<void>;
 };
 
 /**
@@ -207,6 +222,7 @@ class Provider {
  * This class provides methods to configure the sensor, read voltage measurements, and manage the
  * I2C communication.
  */
+template<Platform P>
 class Ina219 {
   private:
     /// Each bit in bus voltage register represents 4mV
@@ -233,6 +249,12 @@ class Ina219 {
     // INA219 datasheet scaling: Power_LSB (W/bit) = 20 * Current_LSB (A/bit)
     static constexpr double POWER_LSB_MULTIPLIER = 20.0;
 
+    /* Helper Constants */
+
+    static constexpr uint8_t BYTE_SHIFT = 8;
+    static constexpr uint16_t BYTE_MASK = 0xFF;
+    static constexpr double TO_MILLI = 1000.0;
+
     /**
      * @brief Enumeration of INA219 register addresses for I2C communication.
      */
@@ -246,8 +268,8 @@ class Ina219 {
     };
 
     /**
-     * @brief Helper struct to define bit fields within the INA219 registers, allowing for easy
-     * manipulation of specific configuration options without affecting other bits.
+     * @brief Helper struct to define bit fields within the 16-bit INA219 registers, allowing for
+     * easy manipulation of specific configuration options without affecting other bits.
      */
     struct RegisterField {
         uint8_t shift;
@@ -273,14 +295,47 @@ class Ina219 {
         }
     };
 
-    static constexpr RegisterField CONFIG_MODE{ 0, 3 };
-    static constexpr RegisterField CONFIG_SADC{ 3, 4 };
-    static constexpr RegisterField CONFIG_BADC{ 7, 4 };
-    static constexpr RegisterField CONFIG_PG{ 11, 2 };
-    static constexpr RegisterField CONFIG_BRNG{ 13, 1 };
-    static constexpr RegisterField CONFIG_RST{ 15, 1 };
+    /* Register field helpers */
 
-    static constexpr RegisterField BUS_VOLTAGE_BD{ 3, 13 };
+    /**
+     * @name Configuration register fields (0x00)
+     * @details 16-bit register layout (bit 15..0):
+     * @code{.txt}
+     *    15    14     13     12 11    10 9 8 7   6 5 4 3    2 1 0
+     *  +-----+-----+------+---------+----------+----------+---------+
+     *  | RST |  0  | BRNG |   PG    |   BADC   |   SADC   |  MODE   |
+     *  +-----+-----+------+---------+----------+----------+---------+
+     *   bit15 bit14 bit13  bits12-11  bits10-7   bits6-3    bits2-0
+     * @endcode
+     * - MODE: Operating mode selection (3 bits).
+     * - SADC: Shunt ADC resolution/averaging (4 bits).
+     * - BADC: Bus ADC resolution/averaging (4 bits).
+     * - PG  : PGA gain / shunt voltage range (2 bits).
+     * - BRNG: Bus voltage range (1 bit): 0=16V, 1=32V.
+     * - RST : Reset bit (1 bit).
+     */
+    static constexpr RegisterField CONFIG_MODE{ 0, 3 };     ///< MODE  bits [2:0]
+    static constexpr RegisterField CONFIG_SADC{ 3, 4 };     ///< SADC  bits [6:3]
+    static constexpr RegisterField CONFIG_BADC{ 7, 4 };     ///< BADC  bits [10:7]
+    static constexpr RegisterField CONFIG_PG{ 11, 2 };      ///< PG    bits [12:11]
+    static constexpr RegisterField CONFIG_BRNG{ 13, 1 };    ///< BRNG  bit  [13]
+    static constexpr RegisterField CONFIG_RST{ 15, 1 };     ///< RST   bit  [15]
+
+    /**
+     * @name Bus Voltage register fields (0x02)
+     * @details 16-bit register layout (bit 15..0):
+     * @code{.txt}
+     *   15 14 13 12 11 10 9 8 7 6 5 4 3  2    1      0
+     *  +-------------------------------+---+------+-----+
+     *  |                BD             | - | CNVR | OVF |
+     *  +-------------------------------+---+------+-----+
+     *                bits15-3                bit1   bit2
+     * @endcode
+     * - BD: Bus voltage data (13 bits).
+     * - CNVR: Conversion ready flag.
+     * - OVF: Math overflow flag.
+     */
+    static constexpr RegisterField BUS_VOLTAGE_BD{ 3, 13 };    ///< BD  bits [15:3]
 
     /**
      * @brief Builder class for configuring the INA219 sensor using a fluent API,
@@ -295,7 +350,16 @@ class Ina219 {
          * Ina219 instance. Reads the current configuration from the sensor to preserve unchanged
          * fields, or uses defaults if the read fails.
          */
-        explicit ConfigBuilder( Ina219& ref, bool delay = true );
+        explicit ConfigBuilder( Ina219& ref, bool delay = true ) : _ref( ref ), _delay( delay ) {
+            // Read current config to preserve unchanged fields
+            if ( _ref._readRegister( RegisterAddress::Config, _config ) ) {
+                _ref._logDebug( "ConfigBuilder: Read current configuration: 0x%04X", _config );
+            } else {
+                _ref._logError(
+                    "ConfigBuilder: Failed to read current configuration, using defaults" );
+                _config = DEFAULT_CONFIG;    // Use default config if read fails
+            }
+        }
 
         // Delete copy and move constructors and assignment operators to prevent misuse of the
         // builder
@@ -316,7 +380,10 @@ class Ina219 {
          * @param range The desired bus voltage range (enum `BusRange`).
          * @return Reference to the ConfigBuilder for method chaining.
          */
-        ConfigBuilder& busRange( BusRange range ) noexcept;
+        ConfigBuilder& busRange( BusRange range ) noexcept {
+            _config = CONFIG_BRNG.set( _config, static_cast<uint16_t>( range ) );
+            return *this;
+        }
 
         /**
          * @brief Set the Programmable Gain Amplifier (PGA) gain for the INA219 sensor,
@@ -335,7 +402,10 @@ class Ina219 {
          * @param gain The desired PGA gain setting (enum `PgaGain`).
          * @return Reference to the ConfigBuilder for method chaining.
          */
-        ConfigBuilder& pgaGain( PgaGain gain ) noexcept;
+        ConfigBuilder& pgaGain( PgaGain gain ) noexcept {
+            _config = CONFIG_PG.set( _config, static_cast<uint16_t>( gain ) );
+            return *this;
+        }
 
         /**
          * @brief Set the ADC resolution and averaging mode for bus voltage measurements on the
@@ -369,7 +439,10 @@ class Ina219 {
          * @param mode The desired ADC mode for bus voltage measurements (enum `AdcMode`).
          * @return Reference to the ConfigBuilder for method chaining.
          */
-        ConfigBuilder& busAdcMode( AdcMode mode ) noexcept;
+        ConfigBuilder& busAdcMode( AdcMode mode ) noexcept {
+            _config = CONFIG_BADC.set( _config, static_cast<uint16_t>( mode ) );
+            return *this;
+        }
 
         /**
          * @brief Set the ADC resolution and averaging mode for shunt voltage measurements on the
@@ -403,7 +476,10 @@ class Ina219 {
          * @param mode The desired ADC mode for shunt voltage measurements (enum `AdcMode`).
          * @return Reference to the ConfigBuilder for method chaining.
          */
-        ConfigBuilder& shuntAdcMode( AdcMode mode ) noexcept;
+        ConfigBuilder& shuntAdcMode( AdcMode mode ) noexcept {
+            _config = CONFIG_SADC.set( _config, static_cast<uint16_t>( mode ) );
+            return *this;
+        }
 
         /**
          * @brief Set the operating mode for the INA219 sensor, which controls when measurements
@@ -432,13 +508,36 @@ class Ina219 {
          * @param mode The desired operating mode (enum `Mode`).
          * @return Reference to the ConfigBuilder for method chaining.
          */
-        ConfigBuilder& operatingMode( Mode mode ) noexcept;
+        ConfigBuilder& operatingMode( Mode mode ) noexcept {
+            _config = CONFIG_MODE.set( _config, static_cast<uint16_t>( mode ) );
+            return *this;
+        }
 
         /**
          * @brief Destructor that applies the configuration to the INA219 sensor when the builder
          * goes out of scope.
          */
-        ~ConfigBuilder();
+        ~ConfigBuilder() {
+            // Apply configuration to sensor.
+            bool result = _ref._writeRegister( RegisterAddress::Config, _config );
+            if ( !result ) {
+                _ref._logError( "ConfigBuilder: Failed to apply configuration" );
+            } else {
+                if ( _delay ) {
+                    _ref._platform.delayMs(
+                        CONFIG_WAIT_MS );    // Wait for configuration to take effect
+                }
+                _ref._logInfo( "ConfigBuilder: Applied configuration: 0x%04X", _config );
+                _ref._logInfo( "ConfigBuilder:   Bus Range: 0x%02X", CONFIG_BRNG.get( _config ) );
+                _ref._logInfo( "ConfigBuilder:   PGA Gain: 0x%02X", CONFIG_PG.get( _config ) );
+                _ref._logInfo(
+                    "ConfigBuilder:   Bus ADC Mode: 0x%02X", CONFIG_BADC.get( _config ) );
+                _ref._logInfo(
+                    "ConfigBuilder:   Shunt ADC Mode: 0x%02X", CONFIG_SADC.get( _config ) );
+                _ref._logInfo(
+                    "ConfigBuilder:   Operating Mode: 0x%02X", CONFIG_MODE.get( _config ) );
+            }
+        }
 
       private:
         /// Local copy of the configuration register being built
@@ -449,10 +548,10 @@ class Ina219 {
         bool _delay{ true };
     };
 
-    /// Reference to the platform-specific provider for I2C communication and timing
-    Provider& _provider;
     /// I2C address of the INA219 sensor (based on A0/A1 pin configuration)
     Address _addr;
+    /// Platform implementation used by this driver instance.
+    P _platform{};
 
     /// Shunt resistor value in ohms (for calibration)
     double _rShunt = 0.0;
@@ -466,7 +565,24 @@ class Ina219 {
      * @param value The 16-bit value to write to the register.
      * @return true if the write operation was successful; false otherwise.
      */
-    bool _writeRegister( RegisterAddress reg, uint16_t value );
+    bool _writeRegister( RegisterAddress reg, uint16_t value ) {
+        uint8_t data[3];
+        data[0] = static_cast<uint8_t>( reg );
+        data[1] = static_cast<uint8_t>( ( value >> BYTE_SHIFT ) & BYTE_MASK );    // High byte
+        data[2] = static_cast<uint8_t>( value & BYTE_MASK );                      // Low byte
+        bool result = _platform.i2cWrite(
+            static_cast<uint8_t>( _addr ),
+            static_cast<const uint8_t*>( data ),
+            sizeof( data ),
+            false );
+        if ( result ) {
+            _logDebug( "writeRegister: reg=0x%02X, value=0x%04X", reg, value );
+        } else {
+            _logError(
+                "writeRegister: Failed to write register 0x%02X with value 0x%04X", reg, value );
+        }
+        return result;
+    }
 
     /**
      * @brief Read a 16-bit value from a specified INA219 register over I2C.
@@ -475,7 +591,24 @@ class Ina219 {
      * @param value Reference to a variable where the read 16-bit value will be stored.
      * @return true if the read operation was successful and the value was stored; false otherwise
      */
-    bool _readRegister( RegisterAddress reg, uint16_t& value );
+    bool _readRegister( RegisterAddress reg, uint16_t& value ) {
+        uint8_t data[2];
+        auto regAddr = static_cast<uint8_t>( reg );
+        if ( !_platform.i2cWrite( static_cast<uint8_t>( _addr ), &regAddr, 1, true ) ) {
+            _logError( "readRegister: Failed to write register address 0x%02X", reg );
+            return false;    // Write reg address failed
+        }
+        if ( !_platform.i2cRead( static_cast<uint8_t>( _addr ),
+                                 static_cast<uint8_t*>( data ),
+                                 sizeof( data ),
+                                 false ) ) {
+            _logError( "readRegister: Failed to read register 0x%02X", reg );
+            return false;    // Read data failed
+        }
+        value = ( data[0] << BYTE_SHIFT ) | data[1];
+        _logDebug( "readRegister: reg=0x%02X, value=0x%04X", reg, value );
+        return true;
+    }
 
     /**
      * @brief Helper method for logging debug messages using the provider's logging mechanism.
@@ -483,7 +616,16 @@ class Ina219 {
      * @param fmt The format string (printf-style) for the debug message.
      * @param ... Additional arguments for the format string.
      */
-    void _logDebug( const char* fmt, ... ) noexcept;
+    void _logDebug( const char* fmt, ... ) noexcept {
+#if INA219_LOG_LEVEL >= 4
+        std::va_list args;
+        va_start( args, fmt );
+        _platform.logDebug( fmt, args );
+        va_end( args );
+#else
+        (void)fmt;
+#endif
+    }
 
     /**
      * @brief Helper method for logging informational messages using the provider's logging
@@ -492,7 +634,16 @@ class Ina219 {
      * @param fmt The format string (printf-style) for the informational message.
      * @param ... Additional arguments for the format string.
      */
-    void _logInfo( const char* fmt, ... ) noexcept;
+    void _logInfo( const char* fmt, ... ) noexcept {
+#if INA219_LOG_LEVEL >= 3
+        std::va_list args;
+        va_start( args, fmt );
+        _platform.logInfo( fmt, args );
+        va_end( args );
+#else
+        (void)fmt;
+#endif
+    }
 
     /**
      * @brief Helper method for logging warning messages using the provider's logging mechanism.
@@ -500,7 +651,16 @@ class Ina219 {
      * @param fmt The format string (printf-style) for the warning message.
      * @param ... Additional arguments for the format string.
      */
-    void _logWarning( const char* fmt, ... ) noexcept;
+    void _logWarning( const char* fmt, ... ) noexcept {
+#if INA219_LOG_LEVEL >= 2
+        std::va_list args;
+        va_start( args, fmt );
+        _platform.logWarning( fmt, args );
+        va_end( args );
+#else
+        (void)fmt;
+#endif
+    }
 
     /**
      * @brief Helper method for logging error messages using the provider's logging mechanism.
@@ -508,19 +668,49 @@ class Ina219 {
      * @param fmt The format string (printf-style) for the error message.
      * @param ... Additional arguments for the format string.
      */
-    void _logError( const char* fmt, ... ) noexcept;
+    void _logError( const char* fmt, ... ) noexcept {
+#if INA219_LOG_LEVEL >= 1
+        std::va_list args;
+        va_start( args, fmt );
+        _platform.logError( fmt, args );
+        va_end( args );
+#else
+        (void)fmt;
+#endif
+    }
 
   public:
     /**
-     * @brief Constructor for the Ina219 class, which initializes the driver
-     * with a reference to a platform-specific provider and an optional I2C address.
+     * @brief Construct a driver instance using a default-constructed platform and an optional I2C
+     * address.
      *
-     * @param provider Reference to an implementation of the `Provider` interface for I2C
-     * communication and timing.
+     * This constructor is enabled only if the platform type `P` is default-constructible.
+     * It is useful when your platform configuration is fixed at compile time or can be
+     * obtained without parameters (e.g., hard-coded I2C peripheral/pins/baud inside `P`).
+     *
+     * @tparam Q Helper template parameter used for SFINAE enable/disable.
      * @param address The I2C address of the INA219 sensor (default is `Address::A0GndA1Gnd`,
      * which corresponds to 0x40).
      */
-    explicit Ina219( Provider& provider, Address address = Address::A0GndA1Gnd );
+    template<typename Q = P, std::enable_if_t<std::is_default_constructible<Q>::value, int> = 0>
+    explicit Ina219( Address address = Address::A0GndA1Gnd ) : _addr( address ) {
+    }
+
+    /**
+     * @brief Construct a driver instance by taking ownership of a pre-configured platform and with
+     * an optional I2C address.
+     *
+     * The platform is passed by value and moved into the driver. This lets the caller
+     * build a platform object with specific hardware settings (I2C instance, pins, baudrate,
+     * logging sink, etc.) and transfer it into the driver.
+     *
+     * @param platform Platform object.
+     * @param address  The I2C address of the INA219 sensor (default is `Address::A0GndA1Gnd`,
+     * which corresponds to 0x40).
+     */
+    Ina219( P platform, Address address = Address::A0GndA1Gnd ) :
+        _platform( std::move( platform ) ), _addr( address ) {
+    }
 
     /**
      * @brief Start configuring the INA219 sensor using the ConfigBuilder, which provides a fluent
@@ -543,7 +733,9 @@ class Ina219 {
      * applying the configuration to allow the sensor to stabilize. Default is true.
      * @return A ConfigBuilder instance for setting configuration options in a fluent manner.
      */
-    ConfigBuilder configure( bool delay = true ) noexcept;
+    ConfigBuilder configure( bool delay = true ) noexcept {
+        return ConfigBuilder( *this, delay );
+    }
 
     /**
      * @brief Reset the INA219 sensor to its default state by setting the RST bit in the
@@ -553,7 +745,19 @@ class Ina219 {
      * reset command.
      * @return true if the reset command was successfully sent to the sensor; false otherwise.
      */
-    bool reset( bool delay = true ) noexcept;
+    bool reset( bool delay = true ) noexcept {
+        bool result = _writeRegister( RegisterAddress::Config, CONFIG_RST.set( 0, 1 ) );
+        if ( result ) {
+            _logDebug( "reset: Reset command sent successfully" );
+        } else {
+            _logError( "reset: Failed to send sensor reset command" );
+        }
+        if ( delay && result ) {
+            _logDebug( "reset: Waiting for %d ms", RESET_WAIT_MS );
+            _platform.delayMs( RESET_WAIT_MS );
+        }
+        return result;
+    }
 
     /**
      * @brief Read the bus voltage from the INA219 sensor and convert it to millivolts (mV).
@@ -564,7 +768,16 @@ class Ina219 {
      * @param mv Reference to a variable where the bus voltage in millivolts (mV) will be stored.
      * @return true if the read operation was successful and the value was stored; false otherwise.
      */
-    bool readBusVoltageMv( uint16_t& mv ) noexcept;
+    bool readBusVoltageMv( uint16_t& mv ) noexcept {
+        uint16_t rawValue{};
+        if ( !_readRegister( RegisterAddress::BusVoltage, rawValue ) ) {
+            _logError( "readBusVoltageMv: Failed to read bus voltage" );
+            return false;    // Read failed, return false as error indicator
+        }
+        mv = BUS_VOLTAGE_BD.get( rawValue ) * BUS_VOLTAGE_LSB_MV;    // Convert to mV (LSB = 4mV)
+        _logDebug( "readBusVoltageMv: voltage = %d mV, raw = 0x%04X", mv, rawValue );
+        return true;
+    }
 
     /**
      * @brief Sets the shunt resistor value and automatically calculates the appropriate current LSB
@@ -577,7 +790,23 @@ class Ina219 {
      * @return true if the shunt resistor value is valid and calibration was successful; false
      * otherwise.
      */
-    bool setShuntResistor( double rShunt, bool delay = true ) noexcept;
+    bool setShuntResistor( double rShunt, bool delay = true ) noexcept {
+        if ( rShunt <= 0 ) {
+            _logError( "setShuntResistor: Invalid shunt resistor value: %f", rShunt );
+            return false;
+        }
+
+        // Auto‑LSB: max resolution for this R_SHUNT
+        double maxCurrentSafe
+            = MAX_V_SHUNT / rShunt;    // I = V/R, max current that won't exceed shunt voltage limit
+        double currentLsb = maxCurrentSafe / MAX_CURRENT_RAW_VALUE;
+
+        _logInfo( "setShuntResistor: Calculated current LSB: %f A/bit for R_SHUNT: %f",
+                  currentLsb,
+                  rShunt );
+
+        return setCalibration( rShunt, currentLsb, delay );
+    }
 
     /**
      * @brief Sets the calibration register based on the shunt resistor value and desired current
@@ -592,7 +821,32 @@ class Ina219 {
      * @return true if the calculated calibration value is within the sensor's limits and was
      * successfully written to the calibration register; false otherwise.
      */
-    bool setCalibration( double rShunt, double currentLsb, bool delay = true ) noexcept;
+    bool setCalibration( double rShunt, double currentLsb, bool delay = true ) noexcept {
+        if ( rShunt <= 0 || currentLsb <= 0 ) {
+            _logError( "setCalibration: Invalid parameters. R_SHUNT: %f, Current LSB: %f",
+                       rShunt,
+                       currentLsb );
+            return false;
+        }
+
+        auto cal = static_cast<uint16_t>( CAL_CONSTANT / ( rShunt * currentLsb ) );
+
+        _logDebug( "setCalibration: Calculated CAL value: %u for R_SHUNT: %f, Current LSB: %f",
+                   cal,
+                   rShunt,
+                   currentLsb );
+
+        _rShunt = rShunt;
+        _currentLsb = currentLsb;
+
+        bool result = _writeRegister( RegisterAddress::Calibration, cal );
+        if ( delay && result ) {
+            _logDebug( "setCalibration: Waiting for %d ms for calibration to take effect",
+                       CALIBRATION_WAIT_MS );
+            _platform.delayMs( CALIBRATION_WAIT_MS );
+        }
+        return result;
+    }
 
     /**
      * @brief Sets the calibration register based on the shunt resistor value and maximum expected
@@ -608,7 +862,26 @@ class Ina219 {
      * successfully written to the calibration register; false otherwise.
      */
     bool setCalibrationMaxCurrent(
-        double rShunt, double maxExpectedCurrent, bool delay = true ) noexcept;
+        double rShunt, double maxExpectedCurrent, bool delay = true ) noexcept {
+        if ( rShunt <= 0 || maxExpectedCurrent <= 0 ) {
+            _logError(
+                "setCalibrationMaxCurrent: Invalid parameters. R_SHUNT: %f, Max Expected " "Current" ": %f",
+                rShunt,
+                maxExpectedCurrent );
+            return false;
+        }
+
+        // Compute safe LSB for this max current
+        double currentLsb = maxExpectedCurrent / MAX_CURRENT_RAW_VALUE;
+
+        _logInfo(
+            "setCalibrationMaxCurrent: Calculated current LSB: %f A/bit for R_SHUNT: %f, Max " "Ex" "pe" "ct" "e" "d " "Current" ": %f",
+            currentLsb,
+            rShunt,
+            maxExpectedCurrent );
+
+        return setCalibration( rShunt, currentLsb, delay );
+    }
 
     /**
      * @brief Get the currently set shunt resistor value in ohms.
@@ -616,7 +889,9 @@ class Ina219 {
      * @return The shunt resistor value in ohms. Returns 0 if the shunt resistor has not been set or
      * if the value is invalid.
      */
-    [[nodiscard]] double getShuntResistor() const noexcept;
+    [[nodiscard]] double getShuntResistor() const noexcept {
+        return _rShunt;
+    }
 
     /**
      * @brief Get the currently set current LSB value in amperes per bit.
@@ -627,7 +902,9 @@ class Ina219 {
      * @return The current LSB value in amperes per bit.
      * Returns 0 if the current LSB has not been set or if the value is invalid.
      */
-    [[nodiscard]] double getCurrentLsb() const noexcept;
+    [[nodiscard]] double getCurrentLsb() const noexcept {
+        return _currentLsb;
+    }
 
     /**
      * @brief Read the shunt voltage from the INA219 sensor and convert it to microvolts (µV).
@@ -638,7 +915,22 @@ class Ina219 {
      * @param uv Reference to a variable where the shunt voltage in microvolts (µV) will be stored.
      * @return true if the read operation was successful and the value was stored; false otherwise.
      */
-    bool readShuntVoltageUv( int32_t& uv ) noexcept;
+    bool readShuntVoltageUv( int32_t& uv ) noexcept {
+        uint16_t rawValue{};
+        if ( !_readRegister( RegisterAddress::ShuntVoltage, rawValue ) ) {
+            _logError( "readShuntVoltageUv: Failed to read shunt voltage" );
+            return false;
+        }
+
+        // Two's complement signed value (sign already extended in the 16-bit word)
+        const auto rawSigned = static_cast<int16_t>( rawValue );
+        uv = static_cast<int32_t>( rawSigned )
+             * SHUNT_VOLTAGE_LSB_UV;    // Convert to µV (LSB = 10µV)
+
+        _logDebug( "readShuntVoltageUv: shunt voltage = %d µV, raw = 0x%04X", uv, rawValue );
+
+        return true;
+    }
 
     /**
      * @brief Read the raw current value from the INA219 sensor's current register, which is a
@@ -648,7 +940,19 @@ class Ina219 {
      * @param raw Reference to a variable where the raw current value will be stored.
      * @return true if the read operation was successful and the value was stored; false otherwise.
      */
-    bool readCurrentRaw( int16_t& raw ) noexcept;
+    bool readCurrentRaw( int16_t& raw ) noexcept {
+        uint16_t rawValue{};
+        if ( !_readRegister( RegisterAddress::Current, rawValue ) ) {
+            _logError( "readCurrentRaw: Failed to read raw current" );
+            return false;    // Read failed, return false as error indicator
+        }
+
+        raw = static_cast<int16_t>( rawValue );    // Current register is signed 16-bit
+
+        _logDebug( "readCurrentRaw: raw = 0x%04X", rawValue );
+
+        return true;
+    }
 
     /**
      * @brief Read the current from the INA219 sensor and convert it to milliamperes (mA) using
@@ -657,7 +961,19 @@ class Ina219 {
      * @param ma Reference to a variable where the current in milliamperes (mA) will be stored.
      * @return true if the read operation was successful and the value was stored; false otherwise.
      */
-    bool readCurrentMa( double& ma ) noexcept;
+    bool readCurrentMa( double& ma ) noexcept {
+        int16_t rawCurrent{};
+        if ( !readCurrentRaw( rawCurrent ) ) {
+            _logError( "readCurrentMa: Failed to read current" );
+            return false;
+        }
+
+        ma = rawCurrent * _currentLsb * TO_MILLI;    // Convert to mA
+
+        _logDebug( "readCurrentMa: current = %f mA, raw = 0x%04X", ma, rawCurrent );
+
+        return true;
+    }
 
     /**
      * @brief Read the raw power value from the INA219 sensor's power register, which is a signed
@@ -667,7 +983,19 @@ class Ina219 {
      * @param raw Reference to a variable where the raw power value will be stored.
      * @return true if the read operation was successful and the value was stored; false otherwise.
      */
-    bool readPowerRaw( int16_t& raw ) noexcept;
+    bool readPowerRaw( int16_t& raw ) noexcept {
+        uint16_t rawValue{};
+        if ( !_readRegister( RegisterAddress::Power, rawValue ) ) {
+            _logError( "readPowerRaw: Failed to read raw power" );
+            return false;    // Read failed, return false as error indicator
+        }
+
+        raw = static_cast<int16_t>( rawValue );    // Power register is signed 16-bit
+
+        _logDebug( "readPowerRaw: raw = 0x%04X", rawValue );
+
+        return true;
+    }
 
     /**
      * @brief Read the power from the INA219 sensor and convert it to milliwatts (mW) using the
@@ -676,7 +1004,19 @@ class Ina219 {
      * @param mw Reference to a variable where the power in milliwatts (mW) will be stored.
      * @return true if the read operation was successful and the value was stored; false otherwise.
      */
-    bool readPowerMw( double& mw ) noexcept;
+    bool readPowerMw( double& mw ) noexcept {
+        int16_t rawPower{};
+        if ( !readPowerRaw( rawPower ) ) {
+            _logError( "readPowerMw: Failed to read power in milliwatts" );
+            return false;
+        }
+
+        mw = rawPower * _currentLsb * POWER_LSB_MULTIPLIER * TO_MILLI;
+
+        _logDebug( "readPowerMw: power = %f mW, raw = 0x%04X", mw, rawPower );
+
+        return true;
+    }
 
     /**
      * @brief Set the I2C address of the INA219 sensor based on the A0/A1 pin configuration.
@@ -684,14 +1024,26 @@ class Ina219 {
      * @param address The desired I2C address (enum `Address`) corresponding to the A0/A1 pin
      * states.
      */
-    void setAddress( Address address ) noexcept;
+    void setAddress( Address address ) noexcept {
+        _addr = address;
+    }
 
     /**
      * @brief Get the currently set I2C address of the INA219 sensor.
      *
      * @return The I2C address (enum `Address`) currently set for the sensor.
      */
-    [[nodiscard]] Address getAddress() const noexcept;
+    [[nodiscard]] Address getAddress() const noexcept {
+        return _addr;
+    }
+
+    /**
+     * @brief Access the owned platform/provider instance.
+     * @return Reference to the platform object used for I2C, delays and logging.
+     */
+    [[nodiscard]] P& getPlatformInstance() const noexcept {
+        return _platform;
+    }
 };
 
 }    // namespace ina219
