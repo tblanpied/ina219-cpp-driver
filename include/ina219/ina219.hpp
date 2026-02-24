@@ -335,7 +335,9 @@ class Ina219 {
      * - CNVR: Conversion ready flag.
      * - OVF: Math overflow flag.
      */
-    static constexpr RegisterField BUS_VOLTAGE_BD{ 3, 13 };    ///< BD  bits [15:3]
+    static constexpr RegisterField BUS_VOLTAGE_BD{ 3, 13 };     ///< BD  bits [15:3]
+    static constexpr RegisterField BUS_VOLTAGE_CNVR{ 1, 1 };    ///< CNVR bit [1]
+    static constexpr RegisterField BUS_VOLTAGE_OVF{ 0, 1 };     ///< OVF bit [0]
 
     /**
      * @brief Builder class for configuring the INA219 sensor using a fluent API,
@@ -558,6 +560,13 @@ class Ina219 {
     /// Current LSB in amperes (for calibration)
     double _currentLsb = 0.0;
 
+    /// Last observed CNVR (Conversion Ready) flag from the Bus Voltage register, updated each time
+    /// `readBusVoltageMv()` is called
+    bool _lastBusCnvr{ false };
+    /// Last observed OVF flag from the Bus Voltage register, updated each time `readBusVoltageMv()`
+    /// is called
+    bool _lastBusOvf{ false };
+
     /**
      * @brief Write a 16-bit value to a specified INA219 register over I2C.
      *
@@ -774,8 +783,17 @@ class Ina219 {
             _logError( "readBusVoltageMv: Failed to read bus voltage" );
             return false;    // Read failed, return false as error indicator
         }
+
+        _lastBusCnvr = ( BUS_VOLTAGE_CNVR.get( rawValue ) != 0 );
+        _lastBusOvf = ( BUS_VOLTAGE_OVF.get( rawValue ) != 0 );
+
         mv = BUS_VOLTAGE_BD.get( rawValue ) * BUS_VOLTAGE_LSB_MV;    // Convert to mV (LSB = 4mV)
-        _logDebug( "readBusVoltageMv: voltage = %d mV, raw = 0x%04X", mv, rawValue );
+
+        _logDebug( "readBusVoltageMv: voltage=%u mV, CNVR=%d, OVF=%d, raw=0x%04X",
+                   mv,
+                   _lastBusCnvr,
+                   _lastBusOvf,
+                   rawValue );
         return true;
     }
 
@@ -1019,6 +1037,37 @@ class Ina219 {
     }
 
     /**
+     * @brief Get the last Conversion Ready (CNVR) flag observed.
+     *
+     * This value is only refreshed when you call `readBusVoltageMv()` (or any other function
+     * that reads the Bus Voltage register).
+     *
+     * @return True if the last Bus Voltage register read indicated conversion-ready.
+     *
+     * @note CNVR is mainly useful in triggered/one-shot modes to know when a
+     * fresh conversion result is ready; in continuous mode you may ignore
+     */
+    [[nodiscard]] bool lastConversionReady() const noexcept {
+        return _lastBusCnvr;
+    }
+
+    /**
+     * @brief Get the last Math Overflow (OVF) flag observed.
+     *
+     * This value is only refreshed when you call readBusVoltageMv() (or any other function that
+     * reads the Bus Voltage register).
+     *
+     * @return True if the last Bus Voltage register read indicated math overflow.
+     *
+     * @note If OVF is true, current and power readings may be meaningless because the device's math
+     * overflowed. You may want to treat this as an error, so you don't take into account the
+     * current / power.
+     */
+    [[nodiscard]] bool lastMathOverflow() const noexcept {
+        return _lastBusOvf;
+    }
+
+    /**
      * @brief Set the I2C address of the INA219 sensor based on the A0/A1 pin configuration.
      *
      * @param address The desired I2C address (enum `Address`) corresponding to the A0/A1 pin
@@ -1038,7 +1087,7 @@ class Ina219 {
     }
 
     /**
-     * @brief Access the owned platform/provider instance.
+     * @brief Access the owned platform instance.
      * @return Reference to the platform object used for I2C, delays and logging.
      */
     [[nodiscard]] P& getPlatformInstance() const noexcept {
