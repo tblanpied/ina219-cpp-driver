@@ -25,7 +25,7 @@
  * @brief Header file containing the class template for the INA219 sensor C++ driver.
  * @version 1.0.0
  * @author Timothée Blanpied
- * @date 2026-02-23
+ * @date 2026-02-24
  */
 
 #pragma once
@@ -137,7 +137,7 @@ enum class Mode : uint8_t {
  * The platform type is responsible for:
  * - Performing I2C write/read transactions (7-bit address).
  * - Providing a millisecond delay function.
- * - Optionally providing logging facilities (printf-like format + va_list).
+ * - Providing logging facilities (printf-like format + va_list).
  *
  * @tparam P Platform type.
  */
@@ -272,8 +272,8 @@ class Ina219 {
      * easy manipulation of specific configuration options without affecting other bits.
      */
     struct RegisterField {
-        uint8_t shift;
-        uint8_t width;
+        uint8_t shift{};
+        uint8_t width{};
 
         static constexpr uint16_t widthMask( uint8_t width ) noexcept {
             return static_cast<uint16_t>( ( static_cast<uint16_t>( 1U ) << width ) - 1U );
@@ -520,8 +520,9 @@ class Ina219 {
          * goes out of scope.
          */
         ~ConfigBuilder() {
+            bool result{ false };
             // Apply configuration to sensor.
-            bool result = _ref._writeRegister( RegisterAddress::Config, _config );
+            result = _ref._writeRegister( RegisterAddress::Config, _config );
             if ( !result ) {
                 _ref._logError( "ConfigBuilder: Failed to apply configuration" );
             } else {
@@ -551,7 +552,7 @@ class Ina219 {
     };
 
     /// I2C address of the INA219 sensor (based on A0/A1 pin configuration)
-    Address _addr;
+    Address _addr{ Address::A0GndA1Gnd };
     /// Platform implementation used by this driver instance.
     P _platform{};
 

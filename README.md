@@ -1,6 +1,6 @@
 # INA219 C++ Driver
 
-A lightweight, modern C++ driver for the Texas Instruments INA219 current / power monitor, designed for embedded projects and easy cross-platform integration via a small “provider” abstraction.
+A lightweight, modern C++ driver for the Texas Instruments INA219 current/power monitor, designed for embedded projects and easy cross-platform integration via a compile-time platform abstraction.
 
 ## Table of Contents
 
@@ -13,37 +13,41 @@ A lightweight, modern C++ driver for the Texas Instruments INA219 current / powe
   - [Calibration (current/power scaling)](#calibration-currentpower-scaling)
   - [Reading measurements](#reading-measurements)
   - [Reset and address management](#reset-and-address-management)
-- [Provider abstraction](#provider-abstraction)
-  - [What is `ina219::Provider`?](#what-is-ina219provider)
-  - [Minimal custom Provider example](#minimal-custom-provider-example)
-  - [Notes on I2C transactions](#notes-on-i2c-transactions)
+- [Platform abstraction](#platform-abstraction)
+  - [How the platform is abstracted](#how-the-platform-is-abstracted)
+  - [Minimal custom Platform type example](#minimal-custom-platform-type-example)
 - [Building and running examples](#building-and-running-examples)
-  - [Using the build script](#using-the-build-script)
-  - [Manual CMake (fallback)](#manual-cmake-fallback)
+  - [Building](#building)
+  - [Flashing](#flashing)
 - [Integrating the driver in your project](#integrating-the-driver-in-your-project)
-  - [Option 1: CMake FetchContent (recommended)](#option-1-cmake-fetchcontent-recommended)
-  - [Option 2: add_subdirectory (submodule or vendored)](#option-2-add_subdirectory-submodule-or-vendored)
-- [Typical usage scenarios (wiring + API)](#typical-usage-scenarios-wiring--api)
-  - [Scenario A: Single sensor, default address](#scenario-a-single-sensor-default-address)
-  - [Scenario B: Multiple INA219 devices on one I2C bus](#scenario-b-multiple-ina219-devices-on-one-i2c-bus)
-  - [Scenario C: Measure only bus voltage (no current)](#scenario-c-measure-only-bus-voltage-no-current)
-  - [Scenario D: Current + power monitoring (typical)](#scenario-d-current--power-monitoring-typical)
-  - [Scenario E: Low power / sleep](#scenario-e-low-power--sleep)
+  - [Option 1: Copy the header into your project](#option-1-copy-the-header-into-your-project)
+  - [Option 2: CMake FetchContent](#option-2-cmake-fetchcontent)
+  - [Option 3: Git submodule](#option-3-git-submodule)
 - [License](#license)
 
 ## Project overview
 
-This repository provides a single-header-friendly INA219 driver API (configuration, calibration, and measurement reads) plus buildable platform examples.  
-The driver is platform-agnostic: all I2C, timing, and optional logging are supplied by a user-implemented `ina219::Provider`.
+This repository provides a single-header INA219 driver API (configuration, calibration, measurement reads) plus buildable platform examples.
+
+The driver is platform-agnostic: all I2C access, timing, and optional logging are supplied by a user-implemented `Platform` type that is checked at compile time.
+
+> C++ standard: the project uses **C++20** (concepts). If you need an older standard, you can remove/replace the concept checks (e.g., via `static_assert` + detection idiom), but C++20 is the supported baseline.
 
 ## Features
 
-- Type-safe configuration enums for bus range, PGA gain, ADC averaging/resolution, and operating mode.
-- Fluent configuration API: `sensor.configure().busRange(...).pgaGain(...).operatingMode(...);` with auto-apply when the builder goes out of scope.
+- Single-header integration (`include/ina219/ina219.hpp`).
+- Platform-agnostic via a templated `Platform` type (no virtual interface required).
+- Type-safe enums for bus range, PGA gain, ADC settings, and operating mode.
+- Fluent configuration API: `sensor.configure().busRange(...).pgaGain(...).operatingMode(...);`
+  - Auto-apply in the builder destructor when the full expression ends (`;`).
 - Calibration helpers based on shunt resistor and either `currentLsb` or a max expected current.
-- Direct measurement helpers: bus voltage (mV), shunt voltage (µV), current (mA), and power (mW).
-- Address selection via a dedicated `ina219::Address` enum mapping A0/A1 pin wiring to the 7-bit I2C address.
-- CMake integration examples (FetchContent / add_subdirectory).
+- Measurement helpers:
+  - Bus voltage (mV)
+  - Shunt voltage (µV)
+  - Current (mA) / raw current
+  - Power (mW) / raw power
+- Address selection via `ina219::Address` mapping A0/A1 wiring to the 7-bit I2C address.
+- CMake integration (FetchContent, submodule, or copy header).
 
 ## Repository structure
 
@@ -59,31 +63,36 @@ Typical layout (may evolve as examples are added):
 │   ├── pico/
 │   ├── esp32/
 │   └── ...
-├── scripts/
-│   └── build.sh
 └── README.md
 ```
 
-The public API is exposed through `#include <ina219/ina219.hpp>`.
+Public API:
+
+```cpp
+#include <ina219/ina219.hpp>
+```
 
 ## API overview
 
 ### Constructing the driver
 
-The driver is constructed from a `Provider` implementation and an optional I2C address (default is `Address::A0_GND_A1_GND` → 0x40).
-
-> Details on the `Provider` abstraction and how to implement it for your platform are covered in the [Provider abstraction](#provider-abstraction) section below.
+Construct the driver using a `Platform` implementation and an optional I2C address
+(default: `Address::A0GndA1Gnd` → `0x40`).
 
 ```cpp
 #include <ina219/ina219.hpp>
 
-MyProvider provider;               // You implement this
-ina219::Ina219 sensor{provider};   // Default address 0x40
+// If your Platform is default-constructible:
+ina219::Ina219<MyPlatform> sensor;   // Default address 0x40
+
+// Otherwise provide a pre-configured platform instance (owned by the driver):
+ina219::Ina219<MyPlatform> sensor{MyPlatform{ /* ... */ }};
 ```
 
 ### Configuring the sensor (fluent API)
 
-`configure()` returns a `ConfigBuilder` that applies the configuration in its destructor when the full expression ends (i.e., at the `;`).
+`configure()` returns a `ConfigBuilder`. The configuration is applied when the builder
+is destroyed (end of the full expression).
 
 ```cpp
 sensor.configure()
@@ -94,19 +103,18 @@ sensor.configure()
     .operatingMode(ina219::Mode::ShuntBusVoltageContinuous);
 ```
 
-If you want the driver to wait after applying config, keep the default `configure(true)` delay behavior.
+If you want the driver to wait after applying config, keep the default `configure(true)` behavior.
 
 ### Calibration (current/power scaling)
 
-You can calibrate explicitly with `(rShunt, currentLsb)` using `setCalibration()`, where `rShunt` is the value of your shunt resistor in ohms, and `currentLsb` is the desired current resolution in amps per bit (e.g., 0.0001 for 100µA/bit).
+You can calibrate explicitly with `(rShunt, currentLsb)` using `setCalibration()`, where:
 
-If you prefer to specify a max expected current with your already-chosen shunt resistor, use `setCalibrationMaxCurrent(rShunt, maxExpectedCurrent)`.
+- `rShunt` is the shunt resistor value in ohms (e.g., `0.1` for 100 mΩ)
+- `currentLsb` is the desired current resolution in amperes per bit (e.g., `0.0001` for 100 µA/bit)
 
-> The current LSB is calculated as `currentLsb = maxExpectedCurrent / 2^15`.
+If you prefer to specify a max expected current, use `setCalibrationMaxCurrent(rShunt, maxExpectedCurrent)`.
 
 Also, you can set the shunt resistor and let the driver pick a matching current LSB automatically using `setShuntResistor()`.
-
-> The current LSB is calculated as `currentLsb = maxExpectedCurrent / 2^15`, where `maxExpectedCurrent = 320mV / rShunt` is the maximum current that can be measured without overflow for the given shunt resistor with a max shunt voltage of 320mV.
 
 ```cpp
 // Easiest: board-specific shunt resistor only
@@ -117,20 +125,23 @@ sensor.setCalibration(0.1, 0.0001);           // rShunt=0.1Ω, currentLsb=100µA
 sensor.setCalibrationMaxCurrent(0.1, 3.2);    // rShunt=0.1Ω, Imax=3.2A (auto currentLsb)
 ```
 
-You can retrieve the active calibration parameters with `getShuntResistor()` and `getCurrentLsb()`.
+You can retrieve the active calibration parameters with:
+
+- `getShuntResistor()`
+- `getCurrentLsb()`
 
 ### Reading measurements
 
-Bus voltage is provided via `readBusVoltageMv(uint16_t& mv)`.  
-Shunt voltage is provided via `readShuntVoltageUv(int32_t& uv)`.  
-Current is provided via `readCurrentMa(double& ma)` (or `readCurrentRaw(int16_t&)`).  
-Power is provided via `readPowerMw(double& mw)` (or `readPowerRaw(int16_t&)`).
+- Bus voltage: `readBusVoltageMv(uint16_t& mv)`
+- Shunt voltage: `readShuntVoltageUv(int32_t& uv)`
+- Current: `readCurrentMa(double& ma)` (or `readCurrentRaw(int16_t&)`)
+- Power: `readPowerMw(double& mw)` (or `readPowerRaw(int16_t&)`)
 
 ```cpp
 uint16_t bus_mv = 0;
-int32_t shunt_uv = 0;
-double current_ma = 0;
-double power_mw = 0;
+int32_t  shunt_uv = 0;
+double   current_ma = 0;
+double   power_mw = 0;
 
 sensor.readBusVoltageMv(bus_mv);      // mV
 sensor.readShuntVoltageUv(shunt_uv);  // µV
@@ -138,121 +149,128 @@ sensor.readCurrentMa(current_ma);     // mA (requires calibration)
 sensor.readPowerMw(power_mw);         // mW (requires calibration)
 ```
 
+**Note**: when reading the bus voltage, the INA219 bus-voltage status flags (CNVR / OVF)
+are also read. The driver exposes getters like `lastConversionReady()` and
+`lastMathOverflow()`, so you can use them to decide whether data is fresh and whether
+current/power results should be trusted.
+
 ### Reset and address management
 
-You can reset the sensor with `reset()` (optional delay enabled by default).  
-You can change and query the active address at runtime via `setAddress()` / `getAddress()`.
+- Reset: `reset()` (optional delay enabled by default)
+- Address: `setAddress()` / `getAddress()`
 
 ```cpp
-sensor.reset();  // resets config to default state
-sensor.setAddress(ina219::Address::A0_VS_A1_GND);
+sensor.reset();
+sensor.setAddress(ina219::Address::A0VsA1Gnd);
 ```
 
-## Provider abstraction
+## Platform abstraction
 
-### What is `ina219::Provider`?
+### How the platform is abstracted
 
-`ina219::Provider` is an abstract interface that supplies:
+The driver is fully static and uses a class template parameter (`Platform`) to bind
+hardware access at compile time.
 
-- I2C write/read primitives (`i2cWrite`, `i2cRead`) with an optional `nostop` parameter for repeated-start sequences.
-- A millisecond delay function (`delayMs`).
-- Optional printf-style logging entry points (`logDebug`, `logInfo`, `logWarning`, `logError`) receiving a `va_list` (default no-op in the base class).
+A C++20 concept is used to describe the platform services required by the driver.
+Any type that satisfies the concept can be used as the platform/policy type.
 
-### Minimal custom Provider example
+The platform type is responsible for:
 
-Implement only what you need for your platform: I2C + delay are mandatory.
+- Performing I2C write/read transactions: `i2cWrite`, `i2cRead`
+- Providing a millisecond delay: `delayMs`
+- Logging (printf-like `fmt` + `va_list`):
+  `logDebug`, `logInfo`, `logWarning`, `logError`
+
+### Minimal custom Platform type example
 
 ```cpp
-#include <ina219/ina219.hpp>
 #include <cstdarg>
-#include <cstdio>
+#include <cstddef>
+#include <cstdint>
 
-class MyProvider : public ina219::Provider {
+class MyPlatform {
 public:
-    bool i2cWrite(uint8_t addr,
-                  const uint8_t* data,
-                  std::size_t len,
-                  bool nostop = false) override
-    {
+    bool i2cWrite(uint8_t addr, const uint8_t* data, std::size_t len, bool nostop = false) {
         // Implement using your SDK/HAL (addr is 7-bit).
         return true;
     }
 
-    bool i2cRead(uint8_t addr,
-                 uint8_t* data,
-                 std::size_t len,
-                 bool nostop = false) override
-    {
+    bool i2cRead(uint8_t addr, uint8_t* data, std::size_t len, bool nostop = false) {
         // Implement using your SDK/HAL.
         return true;
     }
 
-    void delayMs(uint32_t ms) override
-    {
+    void delayMs(uint32_t ms) {
         // Implement using your RTOS/HAL timing.
+        (void)ms;
     }
 
-    // Optional: override logging
-    void logDebug(const char* fmt, std::va_list args) override
-    {
-        std::vprintf(fmt, args);
-        std::printf("\n");
-    }
+    void logDebug(const char* fmt, std::va_list args)   { (void)fmt; (void)args; }
+    void logInfo(const char* fmt, std::va_list args)    { (void)fmt; (void)args; }
+    void logWarning(const char* fmt, std::va_list args) { (void)fmt; (void)args; }
+    void logError(const char* fmt, std::va_list args)   { (void)fmt; (void)args; }
 };
+```
+
+Usage:
+
+```cpp
+ina219::Ina219<MyPlatform> sensor;            // if default-constructible
+// or
+ina219::Ina219<MyPlatform> sensor(MyPlatform{/*...*/});
 ```
 
 ## Building and running examples
 
-### Using the build script
+### Building
 
-Use the repo build helper script from the repository root:
-
-```bash
-./scripts/build.sh
-```
-
-> By default, it builds a static library on the host platform with Debug configuration.
-
-Build for a specific example using the `--example` flag, e.g., for the Pico example:
+From the repo root, configure and build an example directory. For the Pico example:
 
 ```bash
-./scripts/build.sh --example pico
+cmake -S examples/pico -B build
+cmake --build build
 ```
 
-> You can use the `--clean` flag to remove the build directory before building.
+### Flashing
 
-### Manual CMake (fallback)
-
-You can also build examples directly with CMake, as shown in the previous README.  
-For example, to build the Pico example:
+Most embedded examples expose a `flash` target:
 
 ```bash
-cmake -S ./examples/pico -B build
-cmake --build build --target ina219_pico
+cmake --build build --target flash
 ```
 
-Refer to each `examples/<platform>/README.md` for flashing instructions.
+> You must install the required SDK/toolchain for each platform. See `examples/*/README.md`.
 
 ## Integrating the driver in your project
 
-### Option 1: CMake FetchContent (recommended)
+### Option 1: Copy the header into your project
+
+Copy:
+
+- `include/ina219/ina219.hpp`
+
+You can change log level via the `INA219_LOG_LEVEL` macro/definition.
+
+### Option 2: CMake FetchContent
 
 ```cmake
 include(FetchContent)
 
 FetchContent_Declare(
-    ina219
-    GIT_REPOSITORY https://github.com/tblanpied/ina219-cpp-driver.git
-    GIT_TAG main
+  ina219
+  GIT_REPOSITORY https://github.com/tblanpied/ina219-cpp-driver.git
+  GIT_TAG main
 )
+
+# Optional: configure the driver before MakeAvailable
+set(INA219_LOG_LEVEL 0) # 0=none, 1=error, 2=warning, 3=info, 4=debug
+
 FetchContent_MakeAvailable(ina219)
 
 target_link_libraries(your_app PRIVATE ina219::ina219)
 ```
 
-> You can specify a log level for the driver with `set(INA219_LOG_LEVEL <log_level>)` (0=none, 1=error, 2=warning, 3=info, 4=debug) before `FetchContent_MakeAvailable()`. The default log level is 0 (no logs).
-
-### Option 2: add_subdirectory (submodule or vendored)
+### Option 3: Git submodule
 
 ```bash
 git submodule add https://github.com/tblanpied/ina219-cpp-driver.git external/ina219
@@ -263,66 +281,6 @@ add_subdirectory(external/ina219)
 target_link_libraries(your_app PRIVATE ina219::ina219)
 ```
 
-## Typical usage scenarios (wiring + API)
-
-### Scenario A: Single sensor, default address
-
-Wiring: leave A0=GND and A1=GND to use address 0x40.  
-API: use the default constructor address and configure + calibrate.
-
-```cpp
-ina219::Ina219 sensor{provider};          // defaults to Address::A0_GND_A1_GND
-sensor.setShuntResistor(0.1);             // board shunt (Ω)
-sensor.configure().operatingMode(ina219::Mode::ShuntBusVoltageContinuous);
-```
-
-### Scenario B: Multiple INA219 devices on one I2C bus
-
-Wiring: set A0/A1 to different combinations (GND / VS+ / SDA / SCL) to select unique addresses via `ina219::Address`.  
-API: construct each instance with its address (or call `setAddress()` before use).
-
-```cpp
-ina219::Ina219 s1{provider, ina219::Address::A0_GND_A1_GND};
-ina219::Ina219 s2{provider, ina219::Address::A0_VS_A1_GND};
-```
-
-### Scenario C: Measure only bus voltage (no current)
-
-Wiring: connect INA219 bus sense pins appropriately for your measurement point, and connect SDA/SCL.  
-API: configure bus ADC/mode as needed, then call `readBusVoltageMv()`.
-
-```cpp
-sensor.configure()
-    .busRange(ina219::BusRange::V32)
-    .operatingMode(ina219::Mode::BusVoltageContinuous);
-
-uint16_t mv = 0;
-sensor.readBusVoltageMv(mv);
-```
-
-### Scenario D: Current + power monitoring (typical)
-
-Wiring: place a known shunt resistor in series with the load so INA219 can measure the shunt voltage drop.  
-API: calibrate first (shunt resistor + LSB/max current), then read `readCurrentMa()` and `readPowerMw()`.
-
-```cpp
-sensor.setCalibrationMaxCurrent(0.1, 3.2);  // rShunt=0.1Ω, Imax=3.2A
-
-double ma = 0;
-double mw = 0;
-sensor.readCurrentMa(ma);
-sensor.readPowerMw(mw);
-```
-
-### Scenario E: Low power / sleep
-
-Wiring: unchanged.  
-API: set `operatingMode(Mode::PowerDown)` when you want to stop conversions.
-
-```cpp
-sensor.configure().operatingMode(ina219::Mode::PowerDown);
-```
-
 ## License
 
-MIT License (see `LICENSE` file).
+MIT License (see `LICENSE`).

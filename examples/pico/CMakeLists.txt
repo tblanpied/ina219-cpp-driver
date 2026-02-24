@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.20)
 # Select the board (can be overridden: -DPICO_BOARD=pico_w, etc.)
 set(PICO_BOARD pico CACHE STRING "Pico board type")
 
-# Pull in the Pico SDK (expects PICO_SDK_PATH to be set, env or cache).
+# Pull in the Pico SDK.
 include(pico_sdk_import.cmake)
 
 # ==============================================================================
