@@ -190,10 +190,14 @@ CheckOptions:
   - { key: readability-identifier-naming.ProtectedMethodPrefix, value: "_" }
 
   # ─── Constants ─────────────────────────────────────────
-  - { key: readability-identifier-naming.ConstantCase,          value: camelBack }
-  - { key: readability-identifier-naming.ClassConstantCase,     value: camelBack }
-  - { key: readability-identifier-naming.GlobalConstantCase,    value: camelBack }
-  - { key: readability-identifier-naming.ConstexprVariableCase, value: UPPER_CASE }
+  - { key: readability-identifier-naming.ConstantCase,          value: CamelCase }
+  - { key: readability-identifier-naming.ClassConstantCase,     value: CamelCase }
+  - { key: readability-identifier-naming.GlobalConstantCase,    value: CamelCase }
+  - { key: readability-identifier-naming.ConstexprVariableCase, value: CamelCase }
+  - { key: readability-identifier-naming.ConstexprVariablePrefix, value: "k" }
+  - { key: readability-identifier-naming.GlobalConstantPrefix, value: "k" }
+  - { key: readability-identifier-naming.ClassConstantPrefix, value: "k" }
+  - { key: readability-identifier-naming.ConstantPrefix, value: "k" }
 
   # ─── Variables / Members ───────────────────────────────
   - { key: readability-identifier-naming.VariableCase,          value: camelBack }
