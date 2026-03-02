@@ -1,6 +1,7 @@
 #include <hardware/i2c.h>
 #include <ina219/ina219.hpp>
 #include <pico/stdlib.h>
+#include <pico_heartbeat/pico_heartbeat.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -10,17 +11,27 @@ class PicoPlatform {
     explicit PicoPlatform( i2c_inst* i2c_inst = i2c0 ) : _i2cInst( i2c_inst ) {
     }
 
-    bool i2cWrite( uint8_t addr, const uint8_t* data, std::size_t len, bool nostop = false ) {
-        int result = i2c_write_blocking( _i2cInst, addr, data, len, nostop );
+    bool i2cWrite( std::uint8_t addr, const std::uint8_t* data, std::size_t len ) {
+        int result = i2c_write_blocking( _i2cInst, addr, data, len, false );
         return result == static_cast<int>( len );
     }
 
-    bool i2cRead( uint8_t addr, uint8_t* data, std::size_t len, bool nostop = false ) {
-        int result = i2c_read_blocking( _i2cInst, addr, data, len, nostop );
-        return result == static_cast<int>( len );
+    bool i2cWriteRead( std::uint8_t addr,
+                       const std::uint8_t* wdata,
+                       std::size_t wlen,
+                       std::uint8_t* rdata,
+                       std::size_t rlen ) {
+        // Write phase (no STOP) so the following read uses a repeated-start
+        int w = i2c_write_blocking( _i2cInst, addr, wdata, wlen, true );
+        if ( w != static_cast<int>( wlen ) ) {
+            return false;
+        }
+        // Read phase (STOP at the end)
+        int r = i2c_read_blocking( _i2cInst, addr, rdata, rlen, false );
+        return r == static_cast<int>( rlen );
     }
 
-    void delayMs( uint32_t ms ) {
+    void delayMs( std::uint32_t ms ) {
         sleep_ms( ms );
     }
 
@@ -51,7 +62,10 @@ class PicoPlatform {
 };
 
 static void printReadings(
-    uint32_t busVoltage_mV, int32_t shuntVoltage_uV, double current_mA, double power_mW ) {
+    std::uint32_t busVoltage_mV,
+    std::int32_t shuntVoltage_uV,
+    double current_mA,
+    double power_mW ) {
     // First call prints normally; subsequent calls move up 4 lines.
     static int first = 1;
     if ( first == 0 ) {
@@ -73,6 +87,8 @@ static void printReadings(
 
 int main() {
     stdio_init_all();
+
+    pico_heartbeat_start_cfg( 1.2f, PICO_HEARTBEAT_MODE_HEART );
 
     // Initialize I2C bus and timer
     i2c_init( i2c0, 400 * 1000 );             // Initialize I2C at 400kHz
@@ -99,8 +115,8 @@ int main() {
     ina219.setShuntResistor( 0.1 );
 
     while ( true ) {
-        uint16_t busVoltage{};
-        int32_t shuntVoltage{};
+        std::uint16_t busVoltage{};
+        std::int32_t shuntVoltage{};
         double currentMa{}, powerMw{};
 
         ina219.readBusVoltageMv( busVoltage );

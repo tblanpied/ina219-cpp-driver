@@ -34,10 +34,18 @@ FetchContent_Declare(ina219
 # --- Use the following for your project
 # FetchContent_Declare(ina219
 #   GIT_REPOSITORY https://github.com/tblanpied/ina219-cpp-driver.git
-#   GIT_TAG        main
+#   GIT_TAG        v2.0.0
 # )
 
 FetchContent_MakeAvailable(ina219)
+
+# Custom pico heartbeat lib 
+FetchContent_Declare(
+  pico_heartbeat
+  GIT_REPOSITORY https://github.com/tblanpied/pico-heartbeat.git
+  GIT_TAG        v1.0.0
+)
+FetchContent_MakeAvailable(pico_heartbeat)
 
 # ==============================================================================
 # Pico SDK init
@@ -63,6 +71,7 @@ pico_enable_stdio_uart(ina219_pico 0)
 # Link Pico libs + driver target (exported by the driver (root) CMakeLists)
 target_link_libraries(ina219_pico PRIVATE
   ina219
+  pico_heartbeat
   pico_stdlib
   hardware_i2c
 )
