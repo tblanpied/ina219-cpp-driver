@@ -17,29 +17,30 @@ A lightweight, modern C++ driver for the Texas Instruments INA219 current/power 
   - [How the platform is abstracted](#how-the-platform-is-abstracted)
   - [Minimal custom Platform type example](#minimal-custom-platform-type-example)
 - [Building and running examples](#building-and-running-examples)
-  - [Building](#building)
-  - [Flashing](#flashing)
 - [Integrating the driver in your project](#integrating-the-driver-in-your-project)
-  - [Option 1: Copy the header into your project](#option-1-copy-the-header-into-your-project)
+  - [Option 1: Copy the headers into your project](#option-1-copy-the-headers-into-your-project)
   - [Option 2: CMake FetchContent](#option-2-cmake-fetchcontent)
   - [Option 3: Git submodule](#option-3-git-submodule)
 - [License](#license)
 
 ## Project overview
 
-This repository provides a single-header INA219 driver API (configuration, calibration, measurement reads) plus buildable platform examples.
+This repository provides a header-only INA219 driver API (configuration, calibration, measurement reads) plus buildable platform examples.
 
 The driver is platform-agnostic: all I2C access, timing, and optional logging are supplied by a user-implemented `Platform` type that is checked at compile time.
 
-> C++ standard: the project uses **C++20** (concepts). If you need an older standard, you can remove/replace the concept checks (e.g., via `static_assert` + detection idiom), but C++20 is the supported baseline.
+> C++ standard: the project uses **C++20** (concepts). A pre-C++20 fallback (detection idiom / type traits) is also provided, but C++20 remains the supported baseline. If your platform doesn't support C++20, you can fallback to C++17.
 
 ## Features
 
-- Single-header integration (`include/ina219/ina219.hpp`).
+- Header-only integration:
+  - Public header: `include/ina219/ina219.hpp`
+  - Internal implementation details: `include/ina219/details.hpp`
 - Platform-agnostic via a templated `Platform` type (no virtual interface required).
 - Type-safe enums for bus range, PGA gain, ADC settings, and operating mode.
-- Fluent configuration API: `sensor.configure().busRange(...).pgaGain(...).operatingMode(...);`
-  - Auto-apply in the builder destructor when the full expression ends (`;`).
+- Fluent configuration API:
+  - `sensor.configure().busRange(...).pgaGain(...).operatingMode(...);`
+  - Auto-apply at end of full expression (builder destruction).
 - Calibration helpers based on shunt resistor and either `currentLsb` or a max expected current.
 - Measurement helpers:
   - Bus voltage (mV)
@@ -47,7 +48,7 @@ The driver is platform-agnostic: all I2C access, timing, and optional logging ar
   - Current (mA) / raw current
   - Power (mW) / raw power
 - Address selection via `ina219::Address` mapping A0/A1 wiring to the 7-bit I2C address.
-- CMake integration (FetchContent, submodule, or copy header).
+- CMake integration (FetchContent, submodule, or copy headers).
 
 ## Repository structure
 
@@ -58,26 +59,29 @@ Typical layout (may evolve as examples are added):
 ├── CMakeLists.txt
 ├── include/
 │   └── ina219/
-│       └── ina219.hpp
+│       ├── ina219.hpp
+│       └── details.hpp
 ├── examples/
-│   ├── pico/
-│   ├── esp32/
+│   ├── pico_sdk/
+│   ├── esp_idf/
+│   ├── arduino/
 │   └── ...
 └── README.md
 ```
 
-Public API:
+Public include:
 
 ```cpp
 #include <ina219/ina219.hpp>
 ```
 
+> `ina219.hpp` includes `details.hpp` internally. You generally only include `ina219.hpp` in application code.
+
 ## API overview
 
 ### Constructing the driver
 
-Construct the driver using a `Platform` implementation and an optional I2C address
-(default: `Address::A0GndA1Gnd` → `0x40`).
+Construct the driver using a `Platform` implementation and an optional I2C address (default: `Address::A0GndA1Gnd` → `0x40`).
 
 ```cpp
 #include <ina219/ina219.hpp>
@@ -91,8 +95,7 @@ ina219::Ina219<MyPlatform> sensor{MyPlatform{ /* ... */ }};
 
 ### Configuring the sensor (fluent API)
 
-`configure()` returns a `ConfigBuilder`. The configuration is applied when the builder
-is destroyed (end of the full expression).
+`configure()` returns a `ConfigBuilder`. The configuration is applied when the builder is destroyed (end of the full expression).
 
 ```cpp
 sensor.configure()
@@ -149,10 +152,7 @@ sensor.readCurrentMa(current_ma);     // mA (requires calibration)
 sensor.readPowerMw(power_mw);         // mW (requires calibration)
 ```
 
-**Note**: when reading the bus voltage, the INA219 bus-voltage status flags (CNVR / OVF)
-are also read. The driver exposes getters like `lastConversionReady()` and
-`lastMathOverflow()`, so you can use them to decide whether data is fresh and whether
-current/power results should be trusted.
+**Note**: when reading the bus voltage, the INA219 bus-voltage status flags (CNVR / OVF) are also read. The driver exposes getters like `lastConversionReady()` and `lastMathOverflow()`, so you can use them to decide whether data is fresh and whether current/power results should be trusted.
 
 ### Reset and address management
 
@@ -168,16 +168,16 @@ sensor.setAddress(ina219::Address::A0VsA1Gnd);
 
 ### How the platform is abstracted
 
-The driver is fully static and uses a class template parameter (`Platform`) to bind
-hardware access at compile time.
+The driver is fully static and uses a class template parameter (`Platform`) to bind hardware access at compile time.
 
-A C++20 concept is used to describe the platform services required by the driver.
-Any type that satisfies the concept can be used as the platform/policy type.
+A C++20 concept describes the platform services required by the driver (with a pre-C++20 fallback trait). Any type that satisfies the required interface can be used as the platform/policy type.
 
 The platform type is responsible for:
 
-- Performing I2C write/read transactions: `i2cWrite`, `i2cRead`
-- Providing a millisecond delay: `delayMs`
+- Performing I2C transactions:
+  - `i2cWrite(addr, tx, tx_len)` for write-only transactions
+  - `i2cWriteRead(addr, tx, tx_len, rx, rx_len)` for the common “register read” pattern (write register pointer then read bytes, typically with repeated-start)
+- Providing a millisecond delay: `delayMs(ms)`
 - Logging (printf-like `fmt` + `va_list`):
   `logDebug`, `logInfo`, `logWarning`, `logError`
 
@@ -190,17 +190,22 @@ The platform type is responsible for:
 
 class MyPlatform {
 public:
-    bool i2cWrite(uint8_t addr, const uint8_t* data, std::size_t len, bool nostop = false) {
+    bool i2cWrite(std::uint8_t addr, const std::uint8_t* tx, std::size_t tx_len) {
         // Implement using your SDK/HAL (addr is 7-bit).
+        (void)addr; (void)tx; (void)tx_len;
         return true;
     }
 
-    bool i2cRead(uint8_t addr, uint8_t* data, std::size_t len, bool nostop = false) {
-        // Implement using your SDK/HAL.
+    bool i2cWriteRead(std::uint8_t addr,
+                      const std::uint8_t* tx, std::size_t tx_len,
+                      std::uint8_t* rx, std::size_t rx_len) {
+        // Implement as a combined transaction (write-then-read),
+        // typically with a repeated-start between phases.
+        (void)addr; (void)tx; (void)tx_len; (void)rx; (void)rx_len;
         return true;
     }
 
-    void delayMs(uint32_t ms) {
+    void delayMs(std::uint32_t ms) {
         // Implement using your RTOS/HAL timing.
         (void)ms;
     }
@@ -222,32 +227,28 @@ ina219::Ina219<MyPlatform> sensor(MyPlatform{/*...*/});
 
 ## Building and running examples
 
-### Building
+> Brefore, you must install the required SDK/toolchain for each platform. See `examples/*/README.md`.
 
-From the repo root, configure and build an example directory. For the Pico example:
+From the repo root, configure, build and flash using the following commands.
 
-```bash
-cmake -S examples/pico -B build
-cmake --build build
-```
+- **pico_sdk**:
 
-### Flashing
-
-Most embedded examples expose a `flash` target:
-
-```bash
-cmake --build build --target flash
-```
-
-> You must install the required SDK/toolchain for each platform. See `examples/*/README.md`.
+  ```bash
+  # Build
+  cmake -S examples/pico_sdk -B build
+  cmake --build build
+  # Flash
+  cmake --build build --target flash
+  ```
 
 ## Integrating the driver in your project
 
-### Option 1: Copy the header into your project
+### Option 1: Copy the headers into your project
 
-Copy:
+Copy the folder `include/ina219` containing the headers:
 
 - `include/ina219/ina219.hpp`
+- `include/ina219/details.hpp`
 
 You can change log level via the `INA219_LOG_LEVEL` macro/definition.
 
@@ -259,7 +260,7 @@ include(FetchContent)
 FetchContent_Declare(
   ina219
   GIT_REPOSITORY https://github.com/tblanpied/ina219-cpp-driver.git
-  GIT_TAG main
+  GIT_TAG v2.0.0
 )
 
 # Optional: configure the driver before MakeAvailable
