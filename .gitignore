@@ -1,2 +1,4 @@
 # Build artifacts
 build/
+
+examples/esp_idf/sdkconfig
