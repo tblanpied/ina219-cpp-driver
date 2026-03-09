@@ -65,6 +65,7 @@ Typical layout (may evolve as examples are added):
 │   ├── pico_sdk/
 │   ├── esp_idf/
 │   ├── arduino/
+│   ├── stm32/
 │   └── ...
 └── README.md
 ```
@@ -227,7 +228,7 @@ ina219::Ina219<MyPlatform> sensor(MyPlatform{/*...*/});
 
 ## Building and running examples
 
-> Brefore, you must install the required SDK/toolchain for each platform. See `examples/*/README.md`.
+> Brefore, you must install the required SDK/toolchain and tools for each platform. See `examples/*/README.md`.
 
 From the repo root, configure, build and flash using the following commands.
 
@@ -236,6 +237,35 @@ From the repo root, configure, build and flash using the following commands.
   ```bash
   # Build
   cmake -S examples/pico_sdk -B build
+  cmake --build build
+  # Flash
+  cmake --build build --target flash
+  ```
+
+- **esp_idf**:
+
+  ```bash
+  # Build
+  idf.py -B build/ -C examples/esp_idf/ build
+  # Flash
+  idf.py -B build/ -C examples/esp_idf/ flash
+  ```
+
+- **arduino**:
+
+  ```bash
+  # Build
+  cmake -S examples/arduino -B build -DPORT=/dev/ttyACM0
+  cmake --build build
+  # Flash
+  cmake --build build --target upload
+  ```
+
+- **stm32**:
+
+  ```bash
+  # Build
+  cmake -S examples/stm32 -B build
   cmake --build build
   # Flash
   cmake --build build --target flash
